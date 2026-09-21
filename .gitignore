@@ -34,3 +34,6 @@ coverage/
 .vite/
 .turbo/
 *.tsbuildinfo
+
+# --- 检查站运行期会话数据 ---
+certstation-data/
