@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>证书链检查站</title>
+<style>
+:root { --bg:#0f1420; --panel:#18203300; --card:#1b2438; --line:#2c3854; --text:#e6ecf7; --muted:#93a1bd; --ok:#39d98a; --err:#ff6b6b; --info:#7db4ff; --warn:#ffce5a; }
+* { box-sizing:border-box; }
+body { margin:0; font-family:-apple-system,"PingFang SC","Microsoft YaHei",Segoe UI,sans-serif; background:var(--bg); color:var(--text); }
+header { padding:18px 26px; border-bottom:1px solid var(--line); background:#131a2b; }
+header h1 { margin:0; font-size:20px; }
+header .sub { color:var(--muted); font-size:13px; margin-top:4px; }
+main { display:grid; grid-template-columns:430px 1fr; gap:18px; padding:18px 26px; }
+section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
+h2 { font-size:15px; margin:0 0 12px; }
+label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
+textarea, input { width:100%; background:#101728; color:var(--text); border:1px solid var(--line); border-radius:7px; padding:8px 10px; font-size:13px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+textarea { min-height:120px; resize:vertical; }
+.row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+button { background:#2f6df6; color:#fff; border:0; border-radius:7px; padding:9px 16px; font-size:13px; cursor:pointer; margin-top:12px; }
+button.secondary { background:#263350; }
+button:hover { filter:brightness(1.12); }
+.anchor-item { border:1px solid var(--line); border-radius:8px; padding:10px; margin-bottom:10px; background:#141c2e; }
+.anchor-item textarea { min-height:70px; font-size:11px; }
+.pill { display:inline-block; font-size:11px; padding:1px 8px; border-radius:99px; margin-left:6px; }
+.pill.ok { background:rgba(57,217,138,.15); color:var(--ok); }
+.pill.err { background:rgba(255,107,107,.15); color:var(--err); }
+.pill.sel { background:rgba(125,180,255,.18); color:var(--info); }
+.chain { border:1px solid var(--line); border-radius:10px; margin-bottom:14px; overflow:hidden; }
+.chain.accepted { border-color:rgba(57,217,138,.45); }
+.chain.rejected { border-color:rgba(255,107,107,.4); }
+.chain-head { padding:10px 14px; display:flex; justify-content:space-between; align-items:center; cursor:pointer; background:#141c2e; }
+.cert { border-top:1px solid var(--line); padding:10px 14px; }
+.cert .role { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+.cert .dn { font-family:ui-monospace,monospace; font-size:12px; word-break:break-all; margin:3px 0; }
+.finding { font-size:12px; margin:4px 0 4px 14px; padding-left:10px; border-left:3px solid var(--line); }
+.finding.error { border-color:var(--err); color:#ffc4c4; }
+.finding.info { border-color:var(--info); color:#c3d8ff; }
+.meta { font-size:12px; color:var(--muted); }
+.errbox { border:1px solid rgba(255,107,107,.4); background:rgba(255,107,107,.08); border-radius:8px; padding:9px 12px; font-size:12px; margin-top:8px; white-space:pre-wrap; }
+.infobox { border:1px solid rgba(125,180,255,.3); background:rgba(125,180,255,.07); border-radius:8px; padding:9px 12px; font-size:12px; margin-top:8px; white-space:pre-wrap; }
+.kv { font-family:ui-monospace,monospace; font-size:11px; color:var(--muted); }
+details summary { cursor:pointer; font-size:12px; color:var(--info); }
+.policy-row { display:grid; grid-template-columns:1.1fr 1fr .7fr .7fr; gap:6px; margin-bottom:6px; }
+.policy-row input { font-size:11px; padding:5px 7px; }
+.small { font-size:11px; color:var(--muted); }
+#toast { position:fixed; right:20px; bottom:20px; background:#263350; padding:10px 16px; border-radius:8px; font-size:13px; display:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>证书链检查站</h1>
+  <div class="sub">离线策略验证 · 不访问系统信任库、不联网取中间证书 · trust anchor / 用途 / 名称 / 算法策略均由会话显式提供并版本化</div>
+</header>
+<main>
+  <div>
+    <section>
+      <h2>1. 粘贴 PEM 证书（支持无序、重复、交叉签发）</h2>
+      <textarea id="bundle" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----&#10;可以一次粘贴多张，顺序任意"></textarea>
+      <div class="row">
+        <div><label>验证时刻（UTC）</label><input id="verifyAt" value="2024-06-01T12:00:00Z"></div>
+        <div><label>主机名</label><input id="hostname" value="example.com"></div>
+      </div>
+      <div class="row">
+        <div><label>用途（EKU）</label>
+          <input id="purpose" list="purposes" value="serverAuth">
+          <datalist id="purposes">
+            <option value="serverAuth"><option value="clientAuth"><option value="codeSigning"><option value="emailProtection">
+          </datalist>
+        </div>
+        <div style="align-self:end"><button onclick="runCheck(false)">检查链</button>
+        <button class="secondary" onclick="runCheck(true)">导出证明 JSON</button></div>
+      </div>
+      <div id="parseInfo"></div>
+    </section>
+    <section>
+      <h2>2. 会话 trust anchor（显式提供）</h2>
+      <div id="anchors"></div>
+      <button class="secondary" onclick="addAnchor()">+ 添加 anchor</button>
+      <div class="small" style="margin-top:8px">顺序即 anchor 优先级；会话内修改会生成新版本。</div>
+      <div id="sessionMeta" class="small" style="margin-top:6px"></div>
+    </section>
+    <section>
+      <h2>3. 算法/密钥策略（版本化，按验证时刻重放）</h2>
+      <div class="policy-row small"><div>版本</div><div>生效时刻 UTC</div><div>RSA≥</div><div>EC≥</div></div>
+      <div id="policyRows"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px">
+        <input id="retireSha1" value="2017-01-01T00:00:00Z" class="small"><div class="small" style="align-self:center">SHA1 退役时刻（留空=永不）</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px">
+        <input id="retireRsa" placeholder="如 2035-01-01T00:00:00Z" class="small"><div class="small" style="align-self:center">RSA 退役时刻（留空=永不）</div>
+      </div>
+    </section>
+  </div>
+  <div>
+    <section>
+      <h2>链候选与逐证书解释</h2>
+      <div id="resultSummary" class="meta"></div>
+      <div id="chains" style="margin-top:12px"></div>
+    </section>
+  </div>
+</main>
+<div id="toast"></div>
+<script>
+let sessionId = null;
+let lastReport = null;
+
+function esc(s){return String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+
+function addAnchor(pem="",label=""){
+  const wrap=document.createElement("div");
+  wrap.className="anchor-item";
+  wrap.innerHTML=`<input class="a-label" placeholder="anchor 标签（如 Root-R1）" value="${esc(label)}">
+    <textarea class="a-pem" placeholder="粘贴 anchor 根证书 PEM">${esc(pem)}</textarea>
+    <button class="secondary" onclick="this.parentNode.remove()">删除</button>`;
+  document.getElementById("anchors").appendChild(wrap);
+}
+function collectAnchors(){
+  return [...document.querySelectorAll(".anchor-item")].map(w=>({
+    label:w.querySelector(".a-label").value.trim(),
+    pem:w.querySelector(".a-pem").value
+  })).filter(a=>a.pem.includes("BEGIN CERTIFICATE"));
+}
+function buildPolicy(){
+  const rows=[...document.querySelectorAll(".policy-row-input")].map(w=>({
+    version:w.querySelector(".p-version").value.trim()||"v",
+    effectiveAt:w.querySelector(".p-effective").value.trim()||"1970-01-01T00:00:00Z",
+    minKeyBitsRsa:parseInt(w.querySelector(".p-rsa").value||"2048"),
+    minKeyBitsEc:parseInt(w.querySelector(".p-ec").value||"224"),
+    retiredAlgorithms:collectRetirements()
+  }));
+  return {versions:rows};
+}
+function collectRetirements(){
+  const r={};
+  const s1=document.getElementById("retireSha1").value.trim();
+  if(s1)r.SHA1=s1;
+  const sr=document.getElementById("retireRsa").value.trim();
+  if(sr)r.RSA=sr;
+  return r;
+}
+function addPolicyRow(version="modern",effective="1970-01-01T00:00:00Z",rsa=2048,ec=224){
+  const wrap=document.createElement("div");
+  wrap.className="policy-row policy-row-input";
+  wrap.innerHTML=`<input class="p-version" value="${esc(version)}">
+    <input class="p-effective" value="${esc(effective)}">
+    <input class="p-rsa" type="number" value="${rsa}">
+    <input class="p-ec" type="number" value="${ec}">`;
+  document.getElementById("policyRows").appendChild(wrap);
+}
+
+async function runCheck(proof){
+  const payload={
+    bundlePem:document.getElementById("bundle").value,
+    anchors:collectAnchors(),
+    hostname:document.getElementById("hostname").value.trim(),
+    purpose:document.getElementById("purpose").value.trim(),
+    verifyAt:document.getElementById("verifyAt").value.trim(),
+    policy:buildPolicy(),
+    sessionId
+  };
+  const url=proof?"/api/proof":"/api/check";
+  try{
+    const resp=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    const data=await resp.json();
+    if(!resp.ok){document.getElementById("parseInfo").innerHTML=`<div class="errbox">${esc(data.error||"请求失败")}</div>`;return;}
+    if(proof){downloadProof(data);return;}
+    sessionId=data.sessionId;
+    lastReport=data;
+    render(data);
+  }catch(e){
+    document.getElementById("parseInfo").innerHTML=`<div class="errbox">${esc(e.message)}</div>`;
+  }
+}
+
+function render(r){
+  document.getElementById("sessionMeta").textContent=`会话 ${r.sessionId.slice(0,8)} · 版本 v${r.version} · 应用策略版本 ${r.policyVersionApplied}`;
+  const errs=(r.parseErrors||[]).map(e=>`<div>• ${esc(e)}</div>`).join("");
+  document.getElementById("parseInfo").innerHTML=
+    `<div class="infobox">解析证书 ${r.parsedCertificateCount} 张 · 去重 ${(r.duplicateFingerprints||[]).length} 张</div>`+
+    (errs?`<div class="errbox">${errs}</div>`:"");
+  const sel=r.selectedChainIndex;
+  document.getElementById("resultSummary").innerHTML=
+    `共 ${r.chains.length} 条候选链，合格 ${r.chains.filter(c=>c.accepted).length} 条`+
+    (sel!=null?`，已按「最短链 → anchor 优先级 → 稳定指纹」选择第 ${r.chains[sel].rank} 条`:"，<b style='color:#ff9a9a'>无满足策略的链</b>");
+  document.getElementById("chains").innerHTML=r.chains.map((c,i)=>renderChain(c,i)).join("");
+}
+
+function renderChain(c,i){
+  const badges=`<span class="pill ${c.accepted?"ok":"err"}">${c.accepted?"合格":"失败"}</span>`+
+    (c.selected?`<span class="pill sel">已选择 #${c.rank}</span>`:"")+
+    `<span class="pill" style="background:#263350;color:#9db4d8">长度 ${c.length}${c.anchorLabel?` · anchor: ${esc(c.anchorLabel)}`:""}</span>`;
+  const reasons=(!c.accepted&&c.rejectReasons.length)?
+    `<div class="errbox" style="margin:8px 14px">${c.rejectReasons.map(x=>`• ${esc(x)}`).join("<br>")}</div>`:"";
+  const certs=c.certificates.map(cert=>renderCert(cert)).join("");
+  return `<div class="chain ${c.accepted?"accepted":"rejected"}">
+    <div class="chain-head" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
+      <div>候选链 #${i+1} ${badges}</div><div class="kv">${esc(c.fingerprint)}</div>
+    </div>
+    <div>${reasons}${certs}</div></div>`;
+}
+function renderCert(cert){
+  const findings=cert.findings.map(f=>
+    `<div class="finding ${f.severity==="error"?"error":"info"}"><b>[${esc(f.code)}]</b> ${esc(f.message)}</div>`).join("");
+  return `<div class="cert">
+    <div class="role">#${cert.index} · ${esc(cert.role)}</div>
+    <div class="dn"><b>Subject:</b> ${esc(cert.subjectDn)}</div>
+    <div class="dn"><b>Issuer:</b> ${esc(cert.issuerDn)}</div>
+    <div class="kv">SHA-256 ${esc(cert.sha256.slice(0,24))}… · ${esc(cert.signatureAlgorithm)} · ${esc(cert.publicKey)} · ${esc(cert.notBefore)} ~ ${esc(cert.notAfter)}</div>
+    ${findings}</div>`;
+}
+
+function downloadProof(data){
+  const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  a.download=`chain-proof-${data.sessionId.slice(0,8)}-v${data.sessionVersion}.json`;
+  a.click();
+  toast("证明 JSON 已导出（containsPrivateKeys=false）");
+}
+function toast(t){const el=document.getElementById("toast");el.textContent=t;el.style.display="block";setTimeout(()=>el.style.display="none",2500);}
+
+addAnchor("","");
+addPolicyRow();
+</script>
+</body>
+</html>
